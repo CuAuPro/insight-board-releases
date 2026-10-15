@@ -1,0 +1,103 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-insightboard}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-insightboard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - insightboard-postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - insightboard-redis:/data
+
+  api:
+    image: ${INSIGHT_BOARD_API_IMAGE:-ghcr.io/cuaupro/insight-board-api:latest}
+    init: true
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-insightboard}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      SOURCE_ENCRYPTION_KEY: ${SOURCE_ENCRYPTION_KEY:?Set SOURCE_ENCRYPTION_KEY in .env}
+      SOURCE_ENCRYPTION_KEY_ID: ${SOURCE_ENCRYPTION_KEY_ID:-primary}
+      SOURCE_ENCRYPTION_PREVIOUS_KEYS: ${SOURCE_ENCRYPTION_PREVIOUS_KEYS:-}
+      SOURCE_HTTP_ALLOWED_HOSTS: ${SOURCE_HTTP_ALLOWED_HOSTS:-}
+      SOURCE_DB_ALLOWED_HOSTS: ${SOURCE_DB_ALLOWED_HOSTS:-}
+      SOURCE_ALLOW_PRIVATE_NETWORKS: ${SOURCE_ALLOW_PRIVATE_NETWORKS:-false}
+      SOURCE_HTTP_MAX_RESPONSE_BYTES: ${SOURCE_HTTP_MAX_RESPONSE_BYTES:-10485760}
+      SOURCE_CONNECT_TIMEOUT_MS: ${SOURCE_CONNECT_TIMEOUT_MS:-15000}
+      SOURCE_QUERY_TIMEOUT_MS: ${SOURCE_QUERY_TIMEOUT_MS:-30000}
+      SOURCE_QUERY_MAX_ROWS: ${SOURCE_QUERY_MAX_ROWS:-1000}
+      DEVICE_TOKEN_PEPPER: ${DEVICE_TOKEN_PEPPER:?Set DEVICE_TOKEN_PEPPER in .env}
+      APP_BASE_DOMAIN: ${APP_BASE_DOMAIN:?Set APP_BASE_DOMAIN in .env}
+      REDIS_URL: redis://redis:6379
+      PUBLIC_API_ORIGIN: ${PUBLIC_API_ORIGIN:?Set PUBLIC_API_ORIGIN in .env}
+      PUBLIC_ADMIN_ORIGIN: ${PUBLIC_ADMIN_ORIGIN:-${PUBLIC_API_ORIGIN}}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS in .env}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      CLEANUP_PAIRING_SESSION_RETENTION_HOURS: ${CLEANUP_PAIRING_SESSION_RETENTION_HOURS:-24}
+      CLEANUP_UNPAIRED_DEVICE_RETENTION_DAYS: ${CLEANUP_UNPAIRED_DEVICE_RETENTION_DAYS:-30}
+      CLEANUP_SCREEN_AUDIT_RETENTION_DAYS: ${CLEANUP_SCREEN_AUDIT_RETENTION_DAYS:-90}
+      CLEANUP_DIAGNOSTICS_RETENTION_DAYS: ${CLEANUP_DIAGNOSTICS_RETENTION_DAYS:-30}
+      WEB_EXPOSE_MODE: ${WEB_EXPOSE_MODE:-bundled}
+      ANDROID_UPDATE_MANIFEST_URL: ${ANDROID_UPDATE_MANIFEST_URL-https://github.com/CuAuPro/insight-board-releases/releases/latest/download/android-update.json}
+    volumes:
+      - insightboard-uploads:/app/uploads
+
+  web:
+    image: ${INSIGHT_BOARD_WEB_IMAGE:-ghcr.io/cuaupro/insight-board-web:latest}
+    init: true
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      APP_BASE_DOMAIN: ${APP_BASE_DOMAIN:?Set APP_BASE_DOMAIN in .env}
+      WEB_EXPOSE_MODE: ${WEB_EXPOSE_MODE:-bundled}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@company.com}
+    volumes:
+      - insightboard-caddy-data:/data
+    ports:
+      # Bundled mode: keep 80/443 published so Caddy is the public web edge.
+      # External mode: comment out the 80/443 mappings below and let your outer proxy
+      # forward public traffic to 127.0.0.1:8080 instead.
+      - "80:80"
+      - "443:443"
+      # - "127.0.0.1:8080:8080"
+
+volumes:
+  insightboard-postgres:
+  insightboard-redis:
+  insightboard-uploads:
+  insightboard-caddy-data:
